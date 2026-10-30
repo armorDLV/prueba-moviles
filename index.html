@@ -1,0 +1,174 @@
+<!doctype html>
+<!-- PROTOTIPO, se tira (ticket armorDLV/pedidos#16): sonda de lo que hace un móvil con una app web instalada. -->
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sonda de móviles</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icono-180.png">
+  <meta name="theme-color" content="#1f3a5f">
+  <style>
+    body { font: 16px/1.4 system-ui, sans-serif; margin: 0 auto; padding: 16px; max-width: 640px; background: #fff; color: #111; }
+    section { border-top: 1px solid #ccc; padding: 8px 0 12px; }
+    h1 { font-size: 20px; } h2 { font-size: 17px; margin: 8px 0; }
+    button, label.boton { display: inline-block; font: inherit; padding: 10px 14px; margin: 4px 0; border: 1px solid #1f3a5f; border-radius: 6px; background: #eef3f9; }
+    pre { white-space: pre-wrap; word-break: break-all; background: #f4f4f4; padding: 8px; font-size: 13px; }
+    textarea { width: 100%; box-sizing: border-box; font: inherit; }
+  </style>
+</head>
+<body>
+  <h1>Sonda de móviles <span id="version"></span></h1>
+  <pre id="entorno"></pre>
+
+  <section>
+    <h2>1 · Almacenamiento persistente</h2>
+    <button id="persistir">Pedir persist()</button>
+    <pre id="salida-1"></pre>
+  </section>
+
+  <section>
+    <h2>2 · Marcas del día 0</h2>
+    <p>Se escriben la primera vez que se abre en este modo y se leen en cada arranque.</p>
+    <pre id="salida-2"></pre>
+  </section>
+
+  <section>
+    <h2>3 · Foto con la cámara</h2>
+    <label class="boton">Hacer foto<input id="foto" type="file" accept="image/*" capture="environment" hidden></label>
+    <pre id="salida-3"></pre>
+  </section>
+
+  <section>
+    <h2>4 · Push</h2>
+    <button id="push">Activar notificaciones</button>
+    <pre id="salida-4"></pre>
+  </section>
+
+  <section>
+    <h2>Notas</h2>
+    <p>¿Pidió permiso la cámara? ¿Llegaron las notificaciones y qué decían? Lo que veas, aquí.</p>
+    <textarea id="notas" rows="5"></textarea>
+    <button id="copiar">Copiar resultados</button>
+    <button id="ver">Ver registro</button>
+    <pre id="registro"></pre>
+  </section>
+
+  <script src="db.js"></script>
+  <script>
+    // Clave pública VAPID; la privada no sale del portátil de Claude.
+    const VAPID = 'BLZadpLIiNUm95xZDPdfrs-Pk9Fg9VdroJO0x3vVSj1TuTmm34A9i68KCAGMnwqoe119StQVm6bj0cTKVHQge5g';
+    const $ = (id) => document.getElementById(id);
+    const mostrar = (id, datos) => { $(id).textContent = JSON.stringify(datos, null, 2); };
+    const instalada = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+    const modo = instalada ? 'instalada' : 'navegador';
+    const intentar = async (fn) => { try { return await fn(); } catch (err) { return `error: ${err}`; } };
+
+    const entorno = () => ({
+      modo, ua: navigator.userAgent,
+      push: 'PushManager' in window, notificaciones: 'Notification' in window ? Notification.permission : 'no existe',
+      storage: !!navigator.storage, opfs: !!(navigator.storage && navigator.storage.getDirectory),
+    });
+
+    async function estadoAlmacen() {
+      return {
+        persisted: await intentar(() => navigator.storage.persisted()),
+        estimate: await intentar(() => navigator.storage.estimate()),
+      };
+    }
+
+    // Prueba 2: una marca con la fecha en cada almacén. Primero se lee; si no hay ninguna, se escribe.
+    const almacenes = {
+      localStorage: {
+        leer: () => localStorage.getItem('marca'),
+        escribir: (v) => localStorage.setItem('marca', v),
+      },
+      indexedDB: { leer: () => leer('marca'), escribir: (v) => guardar('marca', v) },
+      cacheStorage: {
+        leer: async () => { const r = await (await caches.open('marcas')).match('marca'); return r ? r.text() : null; },
+        escribir: async (v) => (await caches.open('marcas')).put('marca', new Response(v)),
+      },
+      opfs: {
+        leer: async () => {
+          const dir = await navigator.storage.getDirectory();
+          try { return await (await (await dir.getFileHandle('marca')).getFile()).text(); } catch { return null; }
+        },
+        escribir: async (v) => {
+          const f = await (await navigator.storage.getDirectory()).getFileHandle('marca', { create: true });
+          const w = await f.createWritable(); await w.write(v); await w.close();
+        },
+      },
+    };
+
+    async function marcas() {
+      const encontradas = {};
+      for (const [nombre, a] of Object.entries(almacenes)) encontradas[nombre] = await intentar(a.leer);
+      let escritas = null;
+      if (Object.values(encontradas).every((v) => v === null || String(v).startsWith('error'))) {
+        const marca = `${modo} ${new Date().toISOString()}`;
+        escritas = {};
+        for (const [nombre, a] of Object.entries(almacenes)) escritas[nombre] = (await intentar(() => a.escribir(marca))) ?? 'ok';
+      }
+      return { encontradas, escritas };
+    }
+
+    async function arrancar() {
+      $('version').textContent = VERSION;
+      mostrar('entorno', entorno());
+      $('notas').value = (await leer('notas')) || '';
+      const reg = await intentar(() => navigator.serviceWorker.register('sw.js'));
+      const almacen = await estadoAlmacen();
+      const m = await marcas();
+      mostrar('salida-1', almacen);
+      mostrar('salida-2', m);
+      await anotar('arranque', { modo, sw: typeof reg === 'string' ? reg : 'registrado', ...almacen, marcas: m });
+    }
+
+    $('persistir').onclick = async () => {
+      const antes = await intentar(() => navigator.storage.persisted());
+      const persist = await intentar(() => navigator.storage.persist());
+      const datos = { antes, persist, ...(await estadoAlmacen()) };
+      mostrar('salida-1', datos);
+      await anotar('1-persist', { modo, ...datos });
+    };
+
+    $('foto').onchange = async (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      const datos = { nombre: f.name, tipo: f.type, bytes: f.size, lastModified: new Date(f.lastModified).toISOString() };
+      datos.dimensiones = await intentar(async () => { const b = await createImageBitmap(f); return `${b.width}x${b.height}`; });
+      await guardar('foto', f);
+      const vuelta = await leer('foto');
+      datos.releidaDeIndexedDB = vuelta ? `${vuelta.type} ${vuelta.size} bytes` : 'no está';
+      mostrar('salida-3', datos);
+      await anotar('3-foto', { modo, ...datos });
+    };
+
+    $('push').onclick = async () => {
+      const permiso = await intentar(() => Notification.requestPermission());
+      const sub = await intentar(async () => {
+        const reg = await navigator.serviceWorker.ready;
+        const existente = await reg.pushManager.getSubscription();
+        return (existente || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: VAPID })).toJSON();
+      });
+      const datos = { permiso, suscripcion: sub };
+      mostrar('salida-4', datos);
+      await anotar('4-suscripcion', { modo, ...datos });
+    };
+
+    $('notas').oninput = () => guardar('notas', $('notas').value);
+
+    async function resultados() {
+      return JSON.stringify({ entorno: entorno(), notas: $('notas').value, registro: await registro() }, null, 1);
+    }
+    $('ver').onclick = async () => { $('registro').textContent = await resultados(); };
+    $('copiar').onclick = async () => {
+      const texto = await resultados();
+      try { await navigator.clipboard.writeText(texto); $('copiar').textContent = 'Copiado ✓'; }
+      catch { $('registro').textContent = texto; $('copiar').textContent = 'No se pudo copiar: selecciona el texto de abajo'; }
+    };
+
+    arrancar();
+  </script>
+</body>
+</html>
