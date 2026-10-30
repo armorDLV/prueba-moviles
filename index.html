@@ -102,7 +102,7 @@
 
     async function marcas() {
       const encontradas = {};
-      for (const [nombre, a] of Object.entries(almacenes)) encontradas[nombre] = await intentar(a.leer);
+      for (const [nombre, a] of Object.entries(almacenes)) encontradas[nombre] = (await intentar(a.leer)) ?? null;
       let escritas = null;
       if (Object.values(encontradas).every((v) => v === null || String(v).startsWith('error'))) {
         const marca = `${modo} ${new Date().toISOString()}`;

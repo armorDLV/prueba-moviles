@@ -1,6 +1,6 @@
 // PROTOTIPO, se tira (ticket armorDLV/pedidos#16). El registro de resultados en IndexedDB, compartido
 // por la página y el service worker: «registro» guarda cada resultado y «kv», las marcas y la foto.
-const VERSION = 'v1';
+const VERSION = 'v2';
 
 function abrir() {
   return new Promise((ok, mal) => {
